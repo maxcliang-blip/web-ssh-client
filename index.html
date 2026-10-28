@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Web SSH Client</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.5.0/css/xterm.css">
+<style>
+  :root {
+    --bg: #0f172a;
+    --surface: #1e293b;
+    --border: #334155;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #3b82f6;
+    --danger: #ef4444;
+    --ok: #22c55e;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; width: 100%; background: var(--bg); overflow: hidden; }
+  body {
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  #app { display: flex; flex-direction: column; height: 100vh; }
+
+  header {
+    flex: 0 0 auto;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+    background: #111827;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  header h1 { margin: 0; font-size: 16px; letter-spacing: -0.4px; display: flex; align-items: center; gap: 10px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; }
+  .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot.err { background: var(--danger); }
+
+  #connect-panel {
+    flex: 0 0 auto;
+    padding: 16px;
+    overflow-y: auto;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    align-items: end;
+  }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  label { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
+  input {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-family: inherit;
+  }
+  input:focus { outline: none; border-color: var(--accent); }
+  input::placeholder { color: #475569; }
+
+  .actions { grid-column: 1 / -1; display: flex; gap: 10px; }
+
+  #terminal-section {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+  #terminal-bar {
+    flex: 0 0 auto;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+    background: #111827;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 13px;
+  }
+  #terminal-wrapper {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    background: #0b0e14;
+    overflow: hidden;
+  }
+  #terminal-container { width: 100%; height: 100%; }
+  #terminal-container .xterm {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  }
+
+  /* iPad-optimized sticky bottom toolbar: 44x44px touch targets */
+  #keyboard-toolbar {
+    position: sticky;
+    bottom: 0;
+    z-index: 60;
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 8px 16px;
+    background: var(--bg);
+    border-top: 1px solid var(--border);
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+  .key-row { display: flex; gap: 8px; justify-content: center; }
+  .key {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    line-height: 1;
+  }
+  .key:active { background: #334155; }
+  .key.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .key.modifier { font-size: 13px; font-weight: 700; }
+
+  #toast {
+    position: fixed;
+    left: 50%;
+    top: 14px;
+    transform: translateX(-50%);
+    padding: 8px 14px;
+    border-radius: 8px;
+    background: #111827;
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 13px;
+    opacity: 0;
+    transition: opacity 0.2s;
+    pointer-events: none;
+    z-index: 100;
+  }
+  #toast.show { opacity: 1; }
+
+  .hidden { display: none !important; }
+
+  @media (max-width: 480px) {
+    header h1 { font-size: 15px; }
+    #keyboard-toolbar { padding: 8px 6px 14px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1><span class="dot" id="status-dot"></span> <span id="status-text">Disconnected</span></h1>
+    <div id="conn-indicator" title="Not connected">—</div>
+  </header>
+
+  <section id="connect-panel">
+    <div class="field">
+      <label>Host</label>
+      <input id="host" placeholder="e.g. 192.168.1.50" value="">
+    </div>
+    <div class="field">
+      <label>Port</label>
+      <input id="port" placeholder="22" value="22">
+    </div>
+    <div class="field">
+      <label>Username</label>
+      <input id="user" placeholder="root">
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input id="pass" type="password" placeholder="password">
+    </div>
+    <div class="actions">
+      <button class="primary" id="btn-connect">Connect</button>
+    </div>
+  </section>
+
+  <section id="terminal-section" class="hidden">
+    <div id="terminal-bar">
+      <div id="term-label">SSH Terminal</div>
+      <button class="danger" id="btn-disconnect">Disconnect</button>
+    </div>
+    <div id="terminal-wrapper">
+      <div id="terminal-container"></div>
+    </div>
+  </section>
+
+  <div id="keyboard-toolbar" role="toolbar" aria-label="Terminal control keys">
+    <div class="key-row">
+      <button class="key modifier" data-key="Ctrl" title="Ctrl (sticky modifier)">Ctrl</button>
+      <button class="key modifier" data-key="Alt" title="Alt (sticky modifier)">Alt</button>
+      <button class="key" data-key="Esc" title="Escape">Esc</button>
+      <button class="key" data-key="Tab" title="Tab">Tab</button>
+    </div>
+    <div class="key-row">
+      <button class="key" data-key="ArrowUp" title="Arrow Up">&#x2191;</button>
+    </div>
+    <div class="key-row">
+      <button class="key" data-key="ArrowLeft" title="Arrow Left">&#x2190;</button>
+      <button class="key" data-key="ArrowDown" title="Arrow Down">&#x2193;</button>
+      <button class="key" data-key="ArrowRight" title="Arrow Right">&#x2192;</button>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.5.0/lib/xterm.js"></script>
+<script>
+(function () {
+  const hostEl = document.getElementById('host');
+  const portEl = document.getElementById('port');
+  const userEl = document.getElementById('user');
+  const passEl = document.getElementById('pass');
+  const btnConnect = document.getElementById('btn-connect');
+  const btnDisconnect = document.getElementById('btn-disconnect');
+  const statusDot = document.getElementById('status-dot');
+  const statusText = document.getElementById('status-text');
+  const connectPanel = document.getElementById('connect-panel');
+  const terminalSection = document.getElementById('terminal-section');
+  const terminalContainer = document.getElementById('terminal-container');
+  const toastEl = document.getElementById('toast');
+
+  let term = null;
+  let ws = null;
+  let pendingResize = null;
+  let lastTouch = 0;
+  const modifiers = { ctrl: false, alt: false };
+
+  function show(id) { document.getElementById(id).classList.remove('hidden'); }
+  function hide(id) { document.getElementById(id).classList.add('hidden'); }
+
+  function setStatus(kind, text) {
+    statusText.textContent = text;
+    statusDot.className = 'dot';
+    if (kind === 'connected') {
+      statusDot.classList.add('on');
+      statusDot.title = 'Connected';
+    } else if (kind === 'error') {
+      statusDot.classList.add('err');
+      statusDot.title = 'Error';
+    } else {
+      statusDot.title = 'Disconnected';
+    }
+  }
+
+  function toast(message) {
+    toastEl.textContent = message;
+    toastEl.classList.add('show');
+    setTimeout(function () { toastEl.classList.remove('show'); }, 2500);
+  }
+
+  function sendResize(cols, rows) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'resize', cols: Math.floor(cols), rows: Math.floor(rows) }));
+    } else {
+      pendingResize = { cols: Math.floor(cols), rows: Math.floor(rows) };
+    }
+  }
+
+  function fitTerminal() {
+    if (!term) return;
+    try {
+      const geo = term.proposeGeometry();
+      let cols = Math.max(10, Math.min(200, geo.cols || 80));
+      let rows = Math.max(4, Math.min(60, geo.rows || 24));
+      term.resize(cols, rows);
+    } catch (e) {
+      // ignore fit errors
+    }
+  }
+
+  function updateModifierUI() {
+    document.querySelectorAll('[data-key="Ctrl"]').forEach(function (b) {
+      b.classList.toggle('active', modifiers.ctrl);
+    });
+    document.querySelectorAll('[data-key="Alt"]').forEach(function (b) {
+      b.classList.toggle('active', modifiers.alt);
+    });
+  }
+
+  function sendSpecial(key) {
+    let seq = '';
+    switch (key) {
+      case 'Esc': seq = '\x1b'; break;
+      case 'Tab': seq = '\t'; break;
+      case 'ArrowUp':
+        seq = modifiers.ctrl ? '\x1b[1;5A' : modifiers.alt ? '\x1b[1;3A' : '\x1b[A';
+        break;
+      case 'ArrowDown':
+        seq = modifiers.ctrl ? '\x1b[1;5B' : modifiers.alt ? '\x1b[1;3B' : '\x1b[B';
+        break;
+      case 'ArrowRight':
+        seq = modifiers.ctrl ? '\x1b[1;5C' : modifiers.alt ? '\x1b[1;3C' : '\x1b[C';
+        break;
+      case 'ArrowLeft':
+        seq = modifiers.ctrl ? '\x1b[1;5D' : modifiers.alt ? '\x1b[1;3D' : '\x1b[D';
+        break;
+    }
+    // One-shot modifiers: tap Ctrl/Alt, then the next special key.
+    modifiers.ctrl = false;
+    modifiers.alt = false;
+    updateModifierUI();
+    if (seq && ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(seq);
+    }
+  }
+
+  function handleKey(key, event) {
+    if (event.type === 'touchstart') {
+      // Stop the iPad virtual keyboard from dismissing when tapping chrome.
+      event.preventDefault();
+      lastTouch = Date.now();
+    }
+    if (term) term.focus();
+    if (key === 'Ctrl') {
+      modifiers.ctrl = !modifiers.ctrl;
+      updateModifierUI();
+    } else if (key === 'Alt') {
+      modifiers.alt = !modifiers.alt;
+      updateModifierUI();
+    } else {
+      sendSpecial(key);
+    }
+  }
+
+  function setupKeys() {
+    document.querySelectorAll('#keyboard-toolbar .key').forEach(function (btn) {
+      const key = btn.getAttribute('data-key');
+      btn.addEventListener('touchstart', function (e) {
+        handleKey(key, e);
+      }, { passive: false });
+      btn.addEventListener('click', function (e) {
+        // Suppress the synthesized click that follows a touch on iOS.
+        if (Date.now() - lastTouch < 500) return;
+        handleKey(key, e);
+      });
+    });
+  }
+
+  function ensureTerm() {
+    if (term) return term;
+    const fontSize = screen.width < 640 ? 12 : 14;
+    term = new window.Terminal({
+      cursorBlink: true,
+      fontSize: fontSize,
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+      theme: { background: '#0b0e14' },
+      macOptionIsMeta: true,
+      allowBold: true,
+      scrollback: 1000,
+    });
+    term.open(terminalContainer);
+
+    term.onData(function (data) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(data);
+      }
+    });
+
+    term.onResize(function (size) {
+      sendResize(size.cols, size.rows);
+    });
+
+    // Keep the terminal focused so the iPad keyboard stays visible.
+    terminalContainer.addEventListener('touchstart', function () {
+      if (term) term.focus();
+    }, { passive: false });
+
+    fitTerminal();
+    return term;
+  }
+
+  function connect() {
+    const host = hostEl.value.trim();
+    const port = parseInt(portEl.value || '22', 10);
+    const username = userEl.value.trim();
+    const password = passEl.value;
+
+    if (!host || !username) {
+      toast('Enter host and username');
+      return;
+    }
+
+    setStatus('connecting', 'Connecting…');
+    btnConnect.disabled = true;
+
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = protocol + '//' + location.host + '/ssh';
+    ws = new WebSocket(url);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = function () {
+      ws.send(JSON.stringify({
+        type: 'connect',
+        host: host,
+        port: port,
+        username: username,
+        password: password,
+      }));
+    };
+
+    ws.onmessage = function (event) {
+      const data = event.data;
+
+      // Binary frame = raw terminal output bytes from the SSH session.
+      if (data instanceof ArrayBuffer) {
+        term.write(new TextDecoder().decode(data));
+        return;
+      }
+
+      if (typeof data === 'string') {
+        try {
+          const msg = JSON.parse(data);
+          if (msg && typeof msg === 'object') {
+            if (msg.type === 'connected') {
+              setStatus('connected', 'Connected');
+              btnConnect.disabled = false;
+              hide('connect-panel');
+              show('terminal-section');
+              ensureTerm();
+              setTimeout(fitTerminal, 50);
+              if (pendingResize) {
+                sendResize(pendingResize.cols, pendingResize.rows);
+                pendingResize = null;
+              }
+              term.focus();
+              return;
+            }
+            if (msg.type === 'error') {
+              setStatus('error', 'Error: ' + (msg.message || 'connection failed'));
+              toast(msg.message || 'Connection failed');
+              disconnect();
+              return;
+            }
+            if (msg.type === 'exit') {
+              toast('Session ended (code ' + (msg.code != null ? msg.code : '?') + ')');
+              disconnect();
+              return;
+            }
+            if (msg.type === 'data') {
+              term.write(msg.data);
+              return;
+            }
+          }
+        } catch (e) {
+          // Not a control message -> treat as raw terminal text.
+          term.write(data);
+          return;
+        }
+      }
+    };
+
+    ws.onerror = function () {
+      setStatus('error', 'WebSocket error');
+      toast('WebSocket error');
+      btnConnect.disabled = false;
+    };
+
+    ws.onclose = function () {
+      if (statusDot.classList.contains('on')) {
+        setStatus('disconnected', 'Disconnected');
+      }
+      ws = null;
+      btnConnect.disabled = false;
+    };
+  }
+
+  function disconnect() {
+    if (ws) {
+      try { ws.close(); } catch (e) {}
+      ws = null;
+    }
+    setStatus('disconnected', 'Disconnected');
+    btnConnect.disabled = false;
+    if (term) term.clear();
+    hide('terminal-section');
+    show('connect-panel');
+    modifiers.ctrl = false;
+    modifiers.alt = false;
+    updateModifierUI();
+  }
+
+  btnConnect.addEventListener('click', connect);
+  btnDisconnect.addEventListener('click', disconnect);
+
+  [hostEl, portEl, userEl, passEl].forEach(function (el) {
+    el.addEventListener('keypress', function (e) {
+      if (e.key === 'Enter') connect();
+    });
+  });
+
+  window.addEventListener('resize', function () {
+    if (term) fitTerminal();
+  });
+
+  setupKeys();
+})();
+</script>
+</body>
+</html>
